@@ -128,7 +128,7 @@ quick_view_ui <- function(id) {
           div(style = "background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 12px 15px; border-radius: 5px; margin-bottom: 15px; font-weight: bold;",
               icon("thermometer-half"), " IR Focal Plane Array (IRFPA) Messages"),
           p("TirFpa component messages. Rows highlighted in red indicate FAIL or Error conditions."),
-          DT::DTOutput(ns("irfpa_table")),
+          uiOutput(ns("irfpa_table")),
 
           br(), br(),
 
@@ -136,7 +136,7 @@ quick_view_ui <- function(id) {
           div(style = "background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; padding: 12px 15px; border-radius: 5px; margin-bottom: 15px; font-weight: bold;",
               icon("bolt"), " Power System Messages"),
           p("Power and PPS-related entries. Rows highlighted in red indicate FAIL or Error conditions."),
-          DT::DTOutput(ns("power_table"))
+          uiOutput(ns("power_table"))
         ),
         bslib::nav_panel(
           "Raw Log",
@@ -734,7 +734,7 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
     # SYSTEM MESSAGES TAB
     # ===========================================================================
 
-    output$irfpa_table <- DT::renderDT({
+    output$irfpa_table <- renderUI({
       req(rv$parsed_log)
 
       # Try to extract IRFPA messages using appropriate function
@@ -765,11 +765,7 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
 
       # Check if we have valid results
       if (is.null(irfpa_df) || !is.data.frame(irfpa_df) || nrow(irfpa_df) == 0) {
-        return(datatable(
-          data.frame(Message = "No IRFPA messages found"),
-          options = list(dom = 't'),
-          rownames = FALSE
-        ))
+        return(p("No IRFPA messages found", style = "color: #999;"))
       }
 
       # Prepare display with all columns (time, fx, sw2, text) like sbitCompass
@@ -782,53 +778,42 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
       available_cols <- display_cols[display_cols %in% names(irfpa_df)]
       display_df <- irfpa_df[, available_cols, drop = FALSE]
 
-      # Format time column
+      # Convert all columns to character for flextable
       if ("time2" %in% names(display_df)) {
-        display_df$time2 <- format(display_df$time2, "%Y-%m-%d %H:%M:%S")
+        display_df$time2 <- as.character(format(display_df$time2, "%Y-%m-%d %H:%M:%S"))
       } else if ("time" %in% names(display_df)) {
-        display_df$time <- format(display_df$time, "%Y-%m-%d %H:%M:%S")
+        display_df$time <- as.character(format(display_df$time, "%Y-%m-%d %H:%M:%S"))
       }
+      display_df$fx <- as.character(display_df$fx)
+      display_df$sw2 <- as.character(display_df$sw2)
+      display_df$text <- as.character(display_df$text)
 
-      # Create datatable
-      dt <- datatable(
-        display_df,
-        options = list(
-          pageLength = 15,
-          scrollX = TRUE,
-          columnDefs = list(
-            list(width = '400px', targets = which(names(display_df) == "text") - 1)
-          )
-        ),
-        filter = 'top',
-        rownames = FALSE,
-        colnames = c('Time', 'Function', 'Component', 'Message')[1:length(available_cols)],
-        class = 'cell-border stripe'
-      )
+      # Create flextable
+      ft <- flextable::flextable(display_df)
 
       # Highlight FAIL/Error rows in red (like sbitCompass)
-      if ("text" %in% names(display_df)) {
-        # Create a flag for rows with FAIL/Error
-        has_error <- grepl('FAIL|Error', display_df$text, ignore.case = TRUE)
-
-        dt <- dt %>%
-          formatStyle(
-            'text',
-            target = 'row',
-            backgroundColor = styleEqual(
-              c(TRUE, FALSE),
-              c('#f8d7da', 'white')
-            ),
-            color = styleEqual(
-              c(TRUE, FALSE),
-              c('#721c24', 'black')
-            )
-          )
+      fail_rows <- grepl('FAIL|Error', display_df$text, ignore.case = TRUE)
+      if (any(fail_rows)) {
+        ft <- flextable::bg(ft, i = which(fail_rows), bg = "#f8d7da", part = "body")
+        ft <- flextable::color(ft, i = which(fail_rows), color = "#721c24", part = "body")
       }
 
-      return(dt)
+      # Apply theme and set headers
+      ft <- ft |>
+        flextable::theme_box() |>
+        flextable::set_header_labels(
+          time = "Time", time2 = "Time",
+          fx = "Function",
+          sw2 = "Component",
+          text = "Message"
+        ) |>
+        flextable::autofit()
+
+      # Return as HTML
+      HTML(as.character(flextable::htmltools_value(ft)))
     })
 
-    output$power_table <- DT::renderDT({
+    output$power_table <- renderUI({
       req(rv$parsed_log)
 
       # Try to extract power messages using appropriate function
@@ -846,11 +831,7 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
 
       # Check if we have valid results
       if (is.null(power_df) || !is.data.frame(power_df) || nrow(power_df) == 0) {
-        return(datatable(
-          data.frame(Message = "No power system messages found"),
-          options = list(dom = 't'),
-          rownames = FALSE
-        ))
+        return(p("No power messages found", style = "color: #999;"))
       }
 
       # Prepare display with all columns (time2, text, sw2, fx) like sbitCompass
@@ -863,50 +844,41 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
       available_cols <- display_cols[display_cols %in% names(power_df)]
       display_df <- power_df[, available_cols, drop = FALSE]
 
-      # Format time column
+      # Format time column and convert to character for flextable
       if ("time2" %in% names(display_df)) {
-        display_df$time2 <- format(display_df$time2, "%Y-%m-%d %H:%M:%S")
+        display_df$time2 <- as.character(format(display_df$time2, "%Y-%m-%d %H:%M:%S"))
       } else if ("time" %in% names(display_df)) {
-        display_df$time <- format(display_df$time, "%Y-%m-%d %H:%M:%S")
+        display_df$time <- as.character(format(display_df$time, "%Y-%m-%d %H:%M:%S"))
       }
 
-      # Create datatable
-      dt <- datatable(
-        display_df,
-        options = list(
-          pageLength = 15,
-          scrollX = TRUE,
-          columnDefs = list(
-            list(width = '400px', targets = which(names(display_df) == "text") - 1)
-          )
-        ),
-        filter = 'top',
-        rownames = FALSE,
-        colnames = c('Timestamp', 'Message', 'Component', 'Function')[1:length(available_cols)],
-        class = 'cell-border stripe'
-      )
+      # Convert all columns to character for flextable
+      display_df$text <- as.character(display_df[[names(display_df)[2]]])
+      display_df$sw2 <- as.character(display_df[[names(display_df)[3]]])
+      display_df$fx <- as.character(display_df[[names(display_df)[4]]])
+
+      # Create flextable
+      ft <- flextable::flextable(display_df)
 
       # Highlight FAIL/Error rows in red (like sbitCompass)
-      if ("text" %in% names(display_df)) {
-        # Create a flag for rows with FAIL/Error
-        has_error <- grepl('FAIL|Error', display_df$text, ignore.case = TRUE)
-
-        dt <- dt %>%
-          formatStyle(
-            'text',
-            target = 'row',
-            backgroundColor = styleEqual(
-              c(TRUE, FALSE),
-              c('#f8d7da', 'white')
-            ),
-            color = styleEqual(
-              c(TRUE, FALSE),
-              c('#721c24', 'black')
-            )
-          )
+      fail_rows <- grepl('FAIL|Error', display_df$text, ignore.case = TRUE)
+      if (any(fail_rows)) {
+        ft <- flextable::bg(ft, i = which(fail_rows), bg = "#f8d7da", part = "body")
+        ft <- flextable::color(ft, i = which(fail_rows), color = "#721c24", part = "body")
       }
 
-      return(dt)
+      # Apply theme and set headers
+      ft <- ft |>
+        flextable::theme_box() |>
+        flextable::set_header_labels(
+          time2 = "Timestamp", time = "Timestamp",
+          text = "Message",
+          sw2 = "Component",
+          fx = "Function"
+        ) |>
+        flextable::autofit()
+
+      # Return as HTML
+      HTML(as.character(flextable::htmltools_value(ft)))
     })
 
     # ===========================================================================
