@@ -1,0 +1,36 @@
+# R History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+.RDataTmp
+
+# User-specific files
+.Ruserdata
+
+# R Environment Variables
+.Renviron
+
+# RStudio files
+.Rproj.user/
+*.Rproj
+
+# OAuth tokens
+.httr-oauth
+
+# Shiny token
+rsconnect/
+
+# Temporary files
+*.tmp
+*.log~
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Output directories (optional - uncomment if needed)
+# output/
+# processed_logs/

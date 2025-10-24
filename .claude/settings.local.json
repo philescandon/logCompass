@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Rscript:*)",
+      "Read(//d/RPackage/**)",
+      "Read(//d/R_Shiny/sbitCompass/**)",
+      "Bash(if [ -d \"d:/R_Shiny/logCompass/R/modules\" ])",
+      "Bash(then echo \"Directory exists\")",
+      "Bash(else mkdir -p \"d:/R_Shiny/logCompass/R/modules\")",
+      "Bash(fi)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
