@@ -36,7 +36,7 @@ ui <- bslib::page_navbar(
   # TAB 2: MS110 Processing
   # ===========================================================================
   bslib::nav_panel(
-    title = "MS110 Info Logs",
+    title = "Preprocess MS110 Logs",
     icon = icon("file-lines"),
     value = "ms110_batch",
 
@@ -136,7 +136,7 @@ ui <- bslib::page_navbar(
   # TAB 3: DB110 Processing
   # ===========================================================================
   bslib::nav_panel(
-    title = "DB110 Error Logs",
+    title = "Preprocess DB110 Logs",
     icon = icon("triangle-exclamation"),
     value = "db110_batch",
 
@@ -253,12 +253,11 @@ ui <- bslib::page_navbar(
         - Structured display of metadata, SBIT results, boot milestones
         - Search and filter test results
         - Export cleaned logs and SBIT results
-        - Launch Pod Compass analysis for deeper investigation
 
         #### 2. Batch Process
         Bulk processing, cleaning, and renaming of log files:
-        - **MS110 Info Logs**: Process MS110 info.log files
-        - **DB110 Error Logs**: Process DB110 errorlog.log files
+        - **Preprocess MS110 Logs**: Process MS110 info.log files
+        - **Preprocess DB110 Logs**: Process DB110 errorlog.log files
         - Automatic metadata extraction
         - Smart renaming with sensor ID, epoch, and mission ID
         - Log cleaning (merge continuation lines, fix contractions)

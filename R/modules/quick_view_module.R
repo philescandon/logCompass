@@ -62,13 +62,6 @@ quick_view_ui <- function(id) {
       # Quick actions card
       bslib::card(
         bslib::card_header("Quick Actions"),
-        actionButton(
-          ns("analyze_in_pod_compass"),
-          "Analyze in Pod Compass",
-          icon = icon("chart-line"),
-          class = "btn-primary",
-          style = "width: 100%; margin-bottom: 10px;"
-        ),
         downloadButton(
           ns("download_cleaned"),
           "Download Cleaned Log",
@@ -371,36 +364,57 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
     sbit_data_raw <- reactive({
       req(rv$parsed_log)
 
-      # Initialize empty data frame
-      sbit_df <- data.frame(
-        Name = character(),
-        TID = character(),
-        Status = character(),
-        time2 = character(),
-        stringsAsFactors = FALSE
-      )
+      message("DEBUG: Log type is: ", rv$log_type)
+      message("DEBUG: Names in parsed_log: ", paste(names(rv$parsed_log), collapse = ", "))
+
+      # Initialize empty tibble
+      sbit_df <- NULL
 
       # Extract SBIT results based on log type
-      tryCatch({
-        if (rv$log_type == "MS110") {
-          # First try to get directly from sbitSection component
-          if (!is.null(rv$parsed_log$sbitSection)) {
-            if (is.data.frame(rv$parsed_log$sbitSection) || inherits(rv$parsed_log$sbitSection, "tbl_df")) {
-              sbit_df <- as.data.frame(rv$parsed_log$sbitSection)
-            }
-          }
-        } else if (rv$log_type == "DB110") {
-          # Use DB110 extraction function
-          sbit_results <- aerolog::db110_getSBITResults(rv$parsed_log)
-          if (is.data.frame(sbit_results) && nrow(sbit_results) > 0) {
-            sbit_df <- sbit_results
-          }
+      if (rv$log_type == "MS110") {
+        message("DEBUG: Processing MS110...")
+        # First try to get directly from sbitSection component
+        if (!is.null(rv$parsed_log$sbitSection)) {
+          message("DEBUG: sbitSection exists")
+          sbit_df <- rv$parsed_log$sbitSection
+          message("DEBUG: MS110 sbitSection has ", nrow(sbit_df), " rows")
+        } else {
+          message("DEBUG: sbitSection is NULL")
         }
-      }, error = function(e) {
-        # If extraction fails, log error but continue
-        message("Error extracting SBIT results: ", e$message)
-      })
+      } else if (rv$log_type == "DB110") {
+        message("DEBUG: Processing DB110...")
+        # For DB110, results are in sbitResults component
+        message("DEBUG: Checking for sbitResults...")
 
+        if ("sbitResults" %in% names(rv$parsed_log)) {
+          message("DEBUG: sbitResults key exists in parsed_log")
+          sbit_df <- rv$parsed_log$sbitResults
+
+          if (!is.null(sbit_df)) {
+            message("DEBUG: sbitResults is not null")
+            message("DEBUG: sbitResults class: ", paste(class(sbit_df), collapse = ", "))
+            message("DEBUG: sbitResults has ", nrow(sbit_df), " rows")
+            message("DEBUG: Columns: ", paste(names(sbit_df), collapse = ", "))
+          } else {
+            message("ERROR: sbitResults exists but is NULL")
+          }
+        } else {
+          message("ERROR: sbitResults key does not exist in parsed_log")
+        }
+      }
+
+      # Return empty tibble if nothing was found
+      if (is.null(sbit_df)) {
+        message("DEBUG: No SBIT data found, returning empty tibble")
+        sbit_df <- tibble::tibble(
+          Name = character(),
+          TID = character(),
+          Status = character(),
+          time2 = as.POSIXct(character())
+        )
+      }
+
+      message("DEBUG: Returning sbit_df with ", nrow(sbit_df), " rows")
       return(sbit_df)
     })
 
@@ -408,10 +422,13 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
     output$sbit_display <- renderUI({
       req(rv$parsed_log)
 
+      message("DEBUG: In sbit_display renderUI")
       sbit_section <- sbit_data_raw()
+      message("DEBUG: sbit_section has ", nrow(sbit_section), " rows")
 
       # Check if we have valid SBIT section
       if (is.null(sbit_section) || nrow(sbit_section) == 0) {
+        message("DEBUG: No SBIT section - returning alert")
         return(
           div(
             class = "alert alert-info",
@@ -421,10 +438,73 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
         )
       }
 
-      # Extract test results using table_helpers function (from sbitCompass)
-      all_tests <- extract_sbit_tests(sbit_section)
-      failures <- extract_sbit_tests(sbit_section, status_filter = "FAIL", include_message = TRUE)
-      degraded <- extract_sbit_tests(sbit_section, status_filter = "DEGR", include_message = TRUE)
+      message("DEBUG: Processing SBIT section for log type: ", rv$log_type)
+
+      # Extract test results - different logic for MS110 vs DB110
+      if (rv$log_type == "MS110") {
+        # MS110: Use extract_sbit_tests to parse from text column
+        all_tests <- extract_sbit_tests(sbit_section)
+      } else if (rv$log_type == "DB110") {
+        # DB110: Data is already in final format, use directly
+        all_tests <- sbit_section
+      }
+
+      # Find TIDs that have FAIL or DEGR status
+      failed_tids <- unique(all_tests$TID[all_tests$Status == "FAIL"])
+      degraded_tids <- unique(all_tests$TID[all_tests$Status == "DEGR"])
+
+      # Get ALL rows for those TIDs (showing complete history)
+      failures <- if (length(failed_tids) > 0) {
+        # Get all rows for TIDs that ever failed
+        result <- all_tests %>%
+          filter(TID %in% failed_tids)
+
+        # Add Message column - different approach for MS110 vs DB110
+        if (rv$log_type == "MS110") {
+          # MS110: Join with sbit_section to get text/Message
+          if ("text" %in% names(sbit_section)) {
+            result <- result %>%
+              left_join(sbit_section %>% select(TID, time2, Message = text), by = c("TID", "time2"))
+          } else {
+            result <- result %>% mutate(Message = NA_character_)
+          }
+        } else {
+          # DB110: No detailed message available in sbitResults
+          result <- result %>% mutate(Message = NA_character_)
+        }
+
+        # Sort by TID then timestamp to show progression
+        result %>% arrange(TID, time2)
+      } else {
+        tibble::tibble(Name = character(), TID = character(), Status = character(),
+                       time2 = as.POSIXct(character()), Message = character())
+      }
+
+      degraded <- if (length(degraded_tids) > 0) {
+        # Get all rows for TIDs that were ever degraded
+        result <- all_tests %>%
+          filter(TID %in% degraded_tids)
+
+        # Add Message column - different approach for MS110 vs DB110
+        if (rv$log_type == "MS110") {
+          # MS110: Join with sbit_section to get text/Message
+          if ("text" %in% names(sbit_section)) {
+            result <- result %>%
+              left_join(sbit_section %>% select(TID, time2, Message = text), by = c("TID", "time2"))
+          } else {
+            result <- result %>% mutate(Message = NA_character_)
+          }
+        } else {
+          # DB110: No detailed message available in sbitResults
+          result <- result %>% mutate(Message = NA_character_)
+        }
+
+        # Sort by TID then timestamp to show progression
+        result %>% arrange(TID, time2)
+      } else {
+        tibble::tibble(Name = character(), TID = character(), Status = character(),
+                       time2 = as.POSIXct(character()), Message = character())
+      }
 
       # Calculate statistics
       total <- nrow(all_tests)
@@ -450,14 +530,19 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
             h4(
               style = "color: #dc3545; margin-top: 20px;",
               icon("exclamation-triangle"),
-              " Failed Tests"
+              " Failed Tests - Complete History"
+            ),
+            p(
+              style = "color: #666; font-style: italic; margin-bottom: 10px;",
+              sprintf("Showing all %d entries for %d TID(s) that had FAIL status. This includes subsequent PASS entries if the test recovered.",
+                      nrow(failures), length(failed_tids))
             ),
             DT::renderDT({
               create_sbit_datatable(
                 failures,
                 column_names = c('Test Name', 'TID', 'Status', 'Message', 'Timestamp'),
                 page_length = 10,
-                apply_status_colors = FALSE
+                apply_status_colors = TRUE  # Enable color coding to show FAIL vs PASS
               )
             }),
             hr()
@@ -472,14 +557,19 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
             h4(
               style = "color: #f0ad4e; margin-top: 20px;",
               icon("exclamation-circle"),
-              " Degraded Tests"
+              " Degraded Tests - Complete History"
+            ),
+            p(
+              style = "color: #666; font-style: italic; margin-bottom: 10px;",
+              sprintf("Showing all %d entries for %d TID(s) that had DEGR status. This includes subsequent PASS entries if the test recovered.",
+                      nrow(degraded), length(degraded_tids))
             ),
             DT::renderDT({
               create_sbit_datatable(
                 degraded,
                 column_names = c('Test Name', 'TID', 'Status', 'Message', 'Timestamp'),
                 page_length = 10,
-                apply_status_colors = FALSE
+                apply_status_colors = TRUE  # Enable color coding to show DEGR vs PASS
               )
             }),
             hr()
@@ -667,8 +757,12 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
       # Try to extract maintenance log using appropriate function
       maint_df <- tryCatch({
         if (rv$log_type == "DB110") {
-          # Use DB110-specific extraction
-          aerolog::db110_getMaintLog(rv$parsed_log)
+          # For DB110, maintLog is already parsed in the result
+          if (!is.null(rv$parsed_log$maintLog)) {
+            rv$parsed_log$maintLog
+          } else {
+            NULL
+          }
         } else if (rv$log_type == "MS110") {
           # For MS110, extract from info (full log tibble)
           if (!is.null(rv$parsed_log$info)) {
@@ -687,6 +781,7 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
           NULL
         }
       }, error = function(e) {
+        message("Error extracting maintenance log: ", e$message)
         NULL
       })
 
@@ -1026,34 +1121,6 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
         write.csv(sbit_df, file, row.names = FALSE)
       }
     )
-
-    # ===========================================================================
-    # ANALYZE IN POD COMPASS
-    # ===========================================================================
-
-    observeEvent(input$analyze_in_pod_compass, {
-      req(rv$selected_file)
-      req(rv$log_type)
-
-      # Return values to parent for Pod Compass navigation
-      # Parent will handle switching to Pod Compass tab
-      if (!is.null(parent_session)) {
-        # Signal parent to switch tabs and load file
-        parent_session$sendCustomMessage(
-          "quick_view_to_pod_compass",
-          list(
-            file = rv$selected_file,
-            log_type = rv$log_type
-          )
-        )
-      }
-
-      showNotification(
-        "Preparing file for Pod Compass analysis...",
-        type = "message",
-        duration = 3
-      )
-    })
 
     # ===========================================================================
     # RETURN VALUES FOR PARENT
