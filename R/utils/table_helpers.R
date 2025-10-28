@@ -179,28 +179,87 @@ create_empty_df <- function(type = c("maint_log", "irfpa", "power")) {
 #' @param maint_log_data Data frame containing maintenance log entries
 #'
 #' @return DT::datatable object
-create_maint_log_table <- function(maint_log_data) {
+create_maint_log_table <- function(maint_log_data, sbit_complete_time = NULL) {
 
   if (!is.data.frame(maint_log_data) || nrow(maint_log_data) == 0) {
     return(data.frame(Message = "No maintenance log entries found"))
   }
 
-  datatable(
+  # Add highlighting column for CBIT entries (runtime tests) BEFORE creating datatable
+  if ("text" %in% names(maint_log_data)) {
+    # Highlight entries containing "CBIT" (Continuous Built-In Test - runtime tests)
+    # as opposed to "SBIT" (Startup Built-In Test)
+    maint_log_data$is_cbit <- grepl("CBIT", maint_log_data$text, ignore.case = TRUE)
+    message("DEBUG: Total rows: ", nrow(maint_log_data))
+    message("DEBUG: CBIT rows: ", sum(maint_log_data$is_cbit, na.rm = TRUE))
+    message("DEBUG: Column names: ", paste(names(maint_log_data), collapse = ", "))
+
+    # Show ALL rows with their CBIT status
+    message("DEBUG: All rows and CBIT status:")
+    for (i in 1:nrow(maint_log_data)) {
+      message("  Row ", i, " [is_cbit=", maint_log_data$is_cbit[i], "]: ",
+              substr(maint_log_data$text[i], 1, 120))
+    }
+
+    # Show which rows should be highlighted
+    cbit_rows <- which(maint_log_data$is_cbit)
+    if (length(cbit_rows) > 0) {
+      message("DEBUG: Rows that should be highlighted in yellow: ", paste(cbit_rows, collapse = ", "))
+    } else {
+      message("DEBUG: NO ROWS will be highlighted (no CBIT found)")
+    }
+  }
+
+  # Create base datatable with conditional column definitions
+  column_defs <- list(
+    list(width = '400px', targets = 1)  # text column
+  )
+
+  # Hide is_cbit column if it exists
+  if ("is_cbit" %in% names(maint_log_data)) {
+    column_defs[[length(column_defs) + 1]] <- list(
+      visible = FALSE,
+      targets = which(names(maint_log_data) == "is_cbit") - 1
+    )
+  }
+
+  dt <- datatable(
     maint_log_data,
     options = list(
       pageLength = 10,
       scrollX = TRUE,
-      columnDefs = list(
-        list(width = '400px', targets = 1)  # text column
-      )
+      columnDefs = column_defs
     ),
     filter = 'top',
     rownames = FALSE,
-    colnames = c('Timestamp', 'Log Entry', 'Function')
-  ) %>%
+    colnames = if ("is_cbit" %in% names(maint_log_data)) {
+      c('Timestamp', 'Log Entry', 'Function', 'Is CBIT')
+    } else {
+      c('Timestamp', 'Log Entry', 'Function')
+    }
+  )
+
+  # Apply conditional row formatting based on is_cbit column FIRST (highlight CBIT entries)
+  if ("is_cbit" %in% names(maint_log_data)) {
+    message("DEBUG: Applying CBIT row highlighting to DataTable")
+    dt <- dt %>%
+      formatStyle(
+        columns = 1:3,  # Apply to columns 1-3 (time2, text, fx) by index
+        valueColumns = 'is_cbit',
+        backgroundColor = styleEqual(
+          c(TRUE, FALSE),
+          c('#fffacd', '')  # Light yellow for CBIT, empty string for no override
+        )
+      )
+  }
+
+  # Then apply fx column styling (will show on top of CBIT highlighting for that column)
+  dt <- dt %>%
     formatStyle('fx',
                 backgroundColor = styleEqual(
                   c('CS_addMaintLogEnt', 'bitMaintLogWrite'),
                   c('#e3f2fd', '#fff3e0')  # Light blue, Light orange
                 ))
+
+  return(dt)
 }

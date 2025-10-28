@@ -12,7 +12,15 @@
 source("R/modules/quick_view_module.R", local = TRUE)
 
 ui <- bslib::page_navbar(
-  title = "Log Compass",
+  title = tags$div(
+    style = "display: inline-flex; align-items: center; gap: 8px;",
+    tags$img(
+      src = "RTX.png",
+      height = "28px",
+      style = "display: inline-block;"
+    ),
+    tags$span("Log Compass", style = "font-weight: 500; font-size: 1.25rem;")
+  ),
   id = "main_navbar",  # Add ID for programmatic tab switching
   theme = bslib::bs_theme(
     version = 5,
@@ -28,6 +36,56 @@ ui <- bslib::page_navbar(
     title = "Quick View",
     icon = icon("eye"),
     value = "quick_view",  # Add value for tab identification
+
+    # Introductory info card
+    div(
+      style = "margin-bottom: 20px;",
+      bslib::accordion(
+        id = "welcome_accordion",
+        open = FALSE,  # Start collapsed to save space
+        bslib::accordion_panel(
+          title = "Using Log Compass & Preprocessing Workflow",
+          icon = icon("circle-info"),
+          shiny::markdown(
+            "
+            **Quick View** provides rapid analysis of single MS110 or DB110 log files without batch processing.
+
+            ### Features
+            - Automatic log type detection (MS110/DB110)
+            - Structured display: Metadata, SBIT Results, Boot Milestones, System Messages
+            - Searchable and filterable test results
+            - Export cleaned logs and SBIT results
+
+            ### Preprocessing Workflow
+
+            Before using Quick View, you may want to preprocess your logs using the **Preprocess MS110 Logs** or **Preprocess DB110 Logs** tabs:
+
+            1. Navigate to the appropriate preprocessing tab (MS110 or DB110)
+            2. Select source directory containing raw log files (`info.log` or `errorlog.log`)
+            3. Choose output directory for processed files
+            4. Click **Process** - files are automatically renamed with metadata:
+               - **MS110**: `info_SENSORID_EPOCH_MISSIONID.log`
+               - **DB110**: `errorlog_SENSORID_EPOCH_MISSIONID.log`
+               - **Example**: `info_12345ABC_20250128_FlightTest.log`
+            5. Logs are cleaned (merged continuation lines, fixed contractions)
+
+            **Then** use Quick View to explore individual processed files.
+
+            ### Quick Start
+
+            1. Click **Browse Files** below to select a log file
+            2. View structured results in the tabs (Metadata, SBIT Results, Boot Milestones, etc.)
+            3. Search and filter test results
+            4. Download cleaned logs or export SBIT results as needed
+
+            ---
+
+            **Select a log file below to begin** →
+            "
+          )
+        )
+      )
+    ),
 
     quick_view_ui("quick_view")
   ),

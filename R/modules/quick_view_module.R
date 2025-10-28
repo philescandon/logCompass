@@ -27,8 +27,15 @@ library(stringr)
 source("R/utils/log_detection.R", local = TRUE)
 source("R/utils/mode_detection.R", local = TRUE)
 source("R/utils/table_helpers.R", local = TRUE)
-source("R/utils/boot_milestones.R", local = TRUE)  # DB110 boot milestones
+source("R/utils/db110_boot_milestones.R", local = TRUE)  # DB110 boot milestones
 source("R/utils/ms110_boot_milestones.R", local = TRUE)  # MS110 boot milestones
+
+# Source SBIT validation utilities (from parent directory)
+tryCatch({
+  source("../validate_sbit.R", local = TRUE)
+}, error = function(e) {
+  message("Note: validate_sbit.R not found - SBIT validation will be skipped")
+})
 
 #' Quick View UI Module
 #'
@@ -111,6 +118,14 @@ quick_view_ui <- function(id) {
         bslib::nav_panel(
           "Maintenance Log",
           icon = icon("wrench"),
+          p(
+            style = "color: #666; font-style: italic; margin-bottom: 10px; padding: 10px; background-color: #f8f9fa; border-radius: 5px;",
+            icon("info-circle"),
+            " ",
+            strong("Note:"), " Entries highlighted in ",
+            span("light yellow", style = "background-color: #fffacd; padding: 2px 5px; border-radius: 3px;"),
+            " contain CBIT (Continuous Built-In Test) results - runtime tests that occur during mission operation."
+          ),
           DT::DTOutput(ns("maintenance_table"))
         ),
         bslib::nav_panel(
@@ -443,28 +458,36 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
       # Extract test results - different logic for MS110 vs DB110
       if (rv$log_type == "MS110") {
         # MS110: Use extract_sbit_tests to parse from text column
-        all_tests <- extract_sbit_tests(sbit_section)
+        # Include message text for later use
+        all_tests <- extract_sbit_tests(sbit_section, include_message = TRUE)
       } else if (rv$log_type == "DB110") {
         # DB110: Data is already in final format, use directly
         all_tests <- sbit_section
       }
 
-      # Find TIDs that have FAIL or DEGR status
-      failed_tids <- unique(all_tests$TID[all_tests$Status == "FAIL"])
-      degraded_tids <- unique(all_tests$TID[all_tests$Status == "DEGR"])
+      # Find Name+TID combinations that have FAIL or DEGR status
+      # Create unique identifiers for each test (Name + TID)
+      failed_tests <- all_tests %>%
+        filter(Status == "FAIL") %>%
+        select(Name, TID) %>%
+        distinct()
 
-      # Get ALL rows for those TIDs (showing complete history)
-      failures <- if (length(failed_tids) > 0) {
-        # Get all rows for TIDs that ever failed
+      degraded_tests <- all_tests %>%
+        filter(Status == "DEGR") %>%
+        select(Name, TID) %>%
+        distinct()
+
+      # Get ALL rows for those Name+TID combinations (showing complete history)
+      failures <- if (nrow(failed_tests) > 0) {
+        # Get all rows for Name+TID combinations that ever failed
         result <- all_tests %>%
-          filter(TID %in% failed_tids)
+          semi_join(failed_tests, by = c("Name", "TID"))
 
         # Add Message column - different approach for MS110 vs DB110
         if (rv$log_type == "MS110") {
-          # MS110: Join with sbit_section to get text/Message
-          if ("text" %in% names(sbit_section)) {
-            result <- result %>%
-              left_join(sbit_section %>% select(TID, time2, Message = text), by = c("TID", "time2"))
+          # MS110: Rename text column to Message (already included from extract_sbit_tests)
+          if ("text" %in% names(result)) {
+            result <- result %>% rename(Message = text)
           } else {
             result <- result %>% mutate(Message = NA_character_)
           }
@@ -473,24 +496,23 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
           result <- result %>% mutate(Message = NA_character_)
         }
 
-        # Sort by TID then timestamp to show progression
-        result %>% arrange(TID, time2)
+        # Sort by Name, TID, then timestamp to show progression for each test
+        result %>% arrange(Name, TID, time2)
       } else {
         tibble::tibble(Name = character(), TID = character(), Status = character(),
                        time2 = as.POSIXct(character()), Message = character())
       }
 
-      degraded <- if (length(degraded_tids) > 0) {
-        # Get all rows for TIDs that were ever degraded
+      degraded <- if (nrow(degraded_tests) > 0) {
+        # Get all rows for Name+TID combinations that were ever degraded
         result <- all_tests %>%
-          filter(TID %in% degraded_tids)
+          semi_join(degraded_tests, by = c("Name", "TID"))
 
         # Add Message column - different approach for MS110 vs DB110
         if (rv$log_type == "MS110") {
-          # MS110: Join with sbit_section to get text/Message
-          if ("text" %in% names(sbit_section)) {
-            result <- result %>%
-              left_join(sbit_section %>% select(TID, time2, Message = text), by = c("TID", "time2"))
+          # MS110: Rename text column to Message (already included from extract_sbit_tests)
+          if ("text" %in% names(result)) {
+            result <- result %>% rename(Message = text)
           } else {
             result <- result %>% mutate(Message = NA_character_)
           }
@@ -499,11 +521,50 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
           result <- result %>% mutate(Message = NA_character_)
         }
 
-        # Sort by TID then timestamp to show progression
-        result %>% arrange(TID, time2)
+        # Sort by Name, TID, then timestamp to show progression for each test
+        result %>% arrange(Name, TID, time2)
       } else {
         tibble::tibble(Name = character(), TID = character(), Status = character(),
                        time2 = as.POSIXct(character()), Message = character())
+      }
+
+      # Validate against golden reference (MS110 only) - COMMENTED OUT FOR NOW
+      # validation <- NULL
+      # if (rv$log_type == "MS110" && exists("validate_sbit") && exists("load_golden_reference")) {
+      #   validation <- tryCatch({
+      #     # Load golden reference from parent directory
+      #     golden_ref_path <- "../golden_sbit_reference.rds"
+      #     if (file.exists(golden_ref_path)) {
+      #       golden_ref <- load_golden_reference(golden_ref_path)
+      #
+      #       # Prepare data for validation (needs node and tid columns)
+      #       all_tests_for_validation <- all_tests %>%
+      #         mutate(node = Name, tid = TID)
+      #       validate_sbit(all_tests_for_validation, golden_ref = golden_ref)
+      #     } else {
+      #       message("Golden reference file not found at: ", golden_ref_path)
+      #       NULL
+      #     }
+      #   }, error = function(e) {
+      #     message("Validation skipped: ", e$message)
+      #     NULL
+      #   })
+      # }
+      validation <- NULL  # Set to NULL to disable validation display
+
+      # Prepare Message column for display
+      # For MS110: rename text to Message; For DB110: add Message column if needed
+      if (rv$log_type == "MS110") {
+        if ("text" %in% names(all_tests)) {
+          all_tests <- all_tests %>% rename(Message = text)
+        } else {
+          all_tests <- all_tests %>% mutate(Message = NA_character_)
+        }
+      } else {
+        # DB110: Add Message column if not present
+        if (!"Message" %in% names(all_tests)) {
+          all_tests <- all_tests %>% mutate(Message = NA_character_)
+        }
       }
 
       # Calculate statistics
@@ -512,12 +573,25 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
       fail <- sum(all_tests$Status == "FAIL", na.rm = TRUE)
       degr <- sum(all_tests$Status == "DEGR", na.rm = TRUE)
 
+      # Count unique tests (Name+TID combinations), excluding INS tests
+      unique_tests <- all_tests %>%
+        mutate(test_id = paste(Name, TID, sep = "_")) %>%
+        filter(!grepl("^INS_", test_id)) %>%
+        select(Name, TID) %>%
+        distinct() %>%
+        nrow()
+
       tagList(
+        # Golden Reference Validation (if available)
+        if (!is.null(validation)) {
+          create_validation_ui(validation)
+        },
+
         # Summary statistics
         div(
           style = "padding: 15px; background-color: #f8f9fa; border-radius: 5px; margin-bottom: 20px;",
           fluidRow(
-            column(3, p(strong("Total Tests:"), " ", total)),
+            column(3, p(strong("Unique Tests:"), " ", unique_tests)),
             column(3, p(strong("Pass:"), " ", span(pass, style = "color: green; font-weight: bold;"))),
             column(3, p(strong("Fail:"), " ", span(fail, style = "color: red; font-weight: bold;"))),
             column(3, p(strong("Degraded:"), " ", span(degr, style = "color: orange; font-weight: bold;")))
@@ -534,8 +608,8 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
             ),
             p(
               style = "color: #666; font-style: italic; margin-bottom: 10px;",
-              sprintf("Showing all %d entries for %d TID(s) that had FAIL status. This includes subsequent PASS entries if the test recovered.",
-                      nrow(failures), length(failed_tids))
+              sprintf("Showing all %d entries for %d test(s) that had FAIL status. This includes subsequent PASS entries if the test recovered.",
+                      nrow(failures), nrow(failed_tests))
             ),
             DT::renderDT({
               create_sbit_datatable(
@@ -561,8 +635,8 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
             ),
             p(
               style = "color: #666; font-style: italic; margin-bottom: 10px;",
-              sprintf("Showing all %d entries for %d TID(s) that had DEGR status. This includes subsequent PASS entries if the test recovered.",
-                      nrow(degraded), length(degraded_tids))
+              sprintf("Showing all %d entries for %d test(s) that had DEGR status. This includes subsequent PASS entries if the test recovered.",
+                      nrow(degraded), nrow(degraded_tests))
             ),
             DT::renderDT({
               create_sbit_datatable(
@@ -599,7 +673,7 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
         DT::renderDT({
           create_sbit_datatable(
             all_tests,
-            column_names = c('Test Name', 'TID', 'Status', 'Timestamp'),
+            column_names = c('Test Name', 'TID', 'Status', 'Message', 'Timestamp'),
             page_length = 25,
             apply_status_colors = TRUE
           )
@@ -797,7 +871,7 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
       # Prepare data for display - select time2, text, fx columns if available
       if (all(c("time2", "text", "fx") %in% names(maint_df))) {
         display_df <- maint_df[, c("time2", "text", "fx"), drop = FALSE]
-        # Use sbitCompass helper function for styled table
+        # Use helper function for styled table with CBIT highlighting
         create_maint_log_table(display_df)
       } else {
         # Fallback: simple display
@@ -1006,64 +1080,43 @@ quick_view_server <- function(id, volumes, parent_session = NULL) {
           ))
         }
 
-        # Format log entries: [timestamp] text
+        # Prepare data for DataTable
         if (!is.null(time_col)) {
-          # Format timestamps
-          timestamps <- format(log_data[[time_col]], "%Y-%m-%d %H:%M:%S")
-          log_lines <- paste0("[", timestamps, "] ", log_data[[text_col]])
-        } else {
-          log_lines <- log_data[[text_col]]
-        }
-
-        # Load Bing sentiment lexicon from tidytext
-        bing_negative <- NULL
-        if (requireNamespace("tidytext", quietly = TRUE)) {
-          tryCatch({
-            bing_lexicon <- tidytext::get_sentiments("bing")
-            bing_negative <- bing_lexicon$word[bing_lexicon$sentiment == "negative"]
-          }, error = function(e) {
-            # If lexicon not available, continue without highlighting
-          })
-        }
-
-        # Process each line and highlight negative words
-        if (!is.null(bing_negative) && length(bing_negative) > 0) {
-          highlighted_lines <- sapply(log_lines, function(line) {
-            # Split line into words while preserving spaces
-            words <- strsplit(line, "\\s+")[[1]]
-
-            # Check each word and wrap negative ones in span
-            highlighted_words <- sapply(words, function(word) {
-              # Remove punctuation for checking but keep original word
-              word_clean <- tolower(gsub("[^a-z]", "", word))
-
-              if (word_clean %in% bing_negative) {
-                # Highlight negative words
-                paste0('<span style="background-color: #fff3cd; color: #856404; font-weight: bold;">',
-                       htmltools::htmlEscape(word), '</span>')
-              } else {
-                htmltools::htmlEscape(word)
-              }
-            })
-
-            paste(highlighted_words, collapse = " ")
-          }, USE.NAMES = FALSE)
-
-          # Combine lines with <br> tags
-          html_content <- paste(highlighted_lines, collapse = "<br>")
-
-          # Return as HTML with monospace font
-          div(
-            style = "font-family: monospace; white-space: pre-wrap; padding: 10px; background-color: #f8f9fa; border-radius: 5px; overflow-x: auto;",
-            HTML(html_content)
+          dt_data <- data.frame(
+            Timestamp = log_data[[time_col]],
+            Message = log_data[[text_col]],
+            stringsAsFactors = FALSE
           )
         } else {
-          # Fallback: display without highlighting
-          pre(
-            style = "background-color: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto;",
-            paste(log_lines, collapse = "\n")
+          dt_data <- data.frame(
+            Message = log_data[[text_col]],
+            stringsAsFactors = FALSE
           )
         }
+
+        # Return searchable DataTable
+        DT::renderDT({
+          DT::datatable(
+            dt_data,
+            options = list(
+              pageLength = 50,
+              scrollX = TRUE,
+              autoWidth = TRUE,
+              columnDefs = list(
+                list(width = '150px', targets = 0),  # Timestamp column
+                list(width = '100%', targets = 1)     # Message column
+              ),
+              dom = 'frtip',  # f=filter, r=processing, t=table, i=info, p=pagination
+              searchHighlight = TRUE,
+              order = list(list(0, 'asc'))  # Sort by timestamp ascending
+            ),
+            filter = 'top',  # Add column filters at the top
+            rownames = FALSE,
+            escape = FALSE,  # Allow HTML in cells if needed
+            class = 'cell-border stripe',
+            style = 'bootstrap'
+          )
+        })
       }, error = function(e) {
         div(
           class = "alert alert-danger",

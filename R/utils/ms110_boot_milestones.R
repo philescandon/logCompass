@@ -113,25 +113,78 @@ extract_ms110_boot_milestones <- function(log_file, info_data, maint_log = NULL,
     }
   }
 
-  # 9-10. SBIT milestones from sbit_section
+  # 9-11. SBIT milestones from sbit_section
   if (!is.null(sbit_section) && is.data.frame(sbit_section) && nrow(sbit_section) > 0) {
+    if ("text" %in% names(sbit_section)) {
+      # Extract unique tests from sbit_section using extract_sbit_tests
+      sbit_tests <- sbit_section %>%
+        filter(grepl('TID.*status', text, ignore.case = TRUE)) %>%
+        mutate(
+          Name = stringr::str_extract(text, stringr::regex("(?<=node name = )\\w+", ignore_case = TRUE)),
+          TID = stringr::str_extract(text, stringr::regex("(?<=TID = )[^,]+", ignore_case = TRUE))
+        ) %>%
+        filter(!is.na(Name) & !is.na(TID))
+
+      # Count unique test combinations (Name + TID), excluding INS tests
+      unique_tests <- sbit_tests %>%
+        mutate(test_id = paste(Name, TID, sep = "_")) %>%
+        filter(!grepl("^INS_", test_id)) %>%
+        select(Name, TID) %>%
+        distinct() %>%
+        nrow()
+
+      if ("time2" %in% names(sbit_section)) {
+        sbit_times <- sbit_section$time2[!is.na(sbit_section$time2)]
+        if (length(sbit_times) > 0 && unique_tests > 0) {
+          # SBIT Start
+          milestones <- rbind(milestones, data.frame(
+            milestone = "SBIT Start",
+            timestamp = min(sbit_times, na.rm = TRUE),
+            value = paste(unique_tests, "tests"),
+            status = "PASS",
+            stringsAsFactors = FALSE
+          ))
+        }
+      }
+    }
+
+    # SHA Validation Errors
+    # Pattern: 'SHA Validation Results: 0 errors' in sbit_section text column
+    # PASS if errors = 0, FAIL if errors > 0
+    if ("text" %in% names(sbit_section)) {
+      sha_validation <- sbit_section %>%
+        filter(!is.na(text) & grepl("SHA Validation Results:", text, ignore.case = TRUE)) %>%
+        slice(1)
+
+      if (nrow(sha_validation) > 0) {
+        # Extract number of errors from text like "SHA Validation Results: 0 errors"
+        error_match <- stringr::str_match(sha_validation$text[1], "SHA Validation Results:\\s*(\\d+)")
+        error_count <- if (!is.na(error_match[1,2])) as.integer(error_match[1,2]) else NA
+
+        if (!is.na(error_count)) {
+          validation_status <- ifelse(error_count == 0, "PASS", "FAIL")
+          validation_value <- paste0(error_count, " errors")
+
+          milestones <- rbind(milestones, data.frame(
+            milestone = "Validation Errors",
+            timestamp = sha_validation$time2[1],
+            value = validation_value,
+            status = validation_status,
+            stringsAsFactors = FALSE
+          ))
+        }
+      }
+    }
+
+    # SBIT Complete
     if ("time2" %in% names(sbit_section)) {
       sbit_times <- sbit_section$time2[!is.na(sbit_section$time2)]
-      if (length(sbit_times) > 0) {
-        # SBIT Start
-        milestones <- rbind(milestones, data.frame(
-          milestone = "SBIT Start",
-          timestamp = min(sbit_times, na.rm = TRUE),
-          value = paste(nrow(sbit_section), "tests"),
-          status = "PASS",
-          stringsAsFactors = FALSE
-        ))
-
-        # SBIT Complete
+      if (length(sbit_times) > 0 && exists("unique_tests") && unique_tests > 0) {
+        # Use the same unique_tests count from SBIT Start
         milestones <- rbind(milestones, data.frame(
           milestone = "SBIT Complete",
           timestamp = max(sbit_times, na.rm = TRUE),
-          value = paste(nrow(sbit_section), "tests"),
+          value = paste(unique_tests, "tests"),
           status = "PASS",
           stringsAsFactors = FALSE
         ))
